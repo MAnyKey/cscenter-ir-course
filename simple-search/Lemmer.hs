@@ -1,7 +1,7 @@
 {-# LANGUAGE CPP, ForeignFunctionInterface, EmptyDataDecls, DeriveDataTypeable #-}
 module Lemmer where
 
-import Foreign
+import Foreign hiding (unsafePerformIO)
 import Foreign.C.String
 import Foreign.C.Types
 import Foreign.Ptr
@@ -10,6 +10,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
 import Control.Exception
 import Data.Typeable
+import System.IO.Unsafe
 
 newtype Analyzer = Analyzer (Ptr Analyzer)
 newtype WordInfos = WordInfos (Ptr WordInfos)
@@ -43,16 +44,17 @@ data CannotAllocateWordInfos = CannotAllocateWordInfos
                                deriving (Show, Typeable)
 instance Exception CannotAllocateWordInfos
 
-withInfos :: Int -> (Infos -> IO b) -> IO b
-withInfos size f = do
+data Infos = Infos !(ForeignPtr WordInfos)
+           deriving (Eq, Show)
+
+{-# NOINLINE makeInfos #-}
+makeInfos size = unsafePerformIO $ do
   infosPtr <- c_infos_new (fromIntegral size)
   if infosPtr == nullPtr then throwIO CannotAllocateWordInfos
     else do
     infos <- newForeignPtr c_infos_free infosPtr
-    f (Infos infos)
+    return $ Infos infos
 
-data Infos = Infos !(ForeignPtr WordInfos)
-           deriving (Eq, Show)
 
 data Lemmer = Lemmer !(ForeignPtr Analyzer)
             deriving (Eq, Show)
