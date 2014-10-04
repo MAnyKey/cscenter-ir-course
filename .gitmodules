@@ -1,3 +1,3 @@
 [submodule "simple-search/hunspell"]
-	path = hunspell/hunspell
+	path = simple-search/hunspell
 	url = git@github.com:MAnyKey/hunspell-snapshot.git
