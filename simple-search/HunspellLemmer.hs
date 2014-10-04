@@ -69,11 +69,11 @@ strings' p_list c_size = handleEmptyList p_list c_size $ \list -> do
 stem :: Hunspell -> ByteString -> [ByteString]
 stem (Hunspell handle) str = unsafePerformIO $ do
   withForeignPtr handle $ \handle -> do
-  B.useAsCString str $ \c_str -> do
-  alloca $ \p_string_list -> do
-    size <- c_hunspell_stem handle p_string_list c_str
-    withStringList handle p_string_list size $ \string_list -> do
-      strings string_list size
+    B.useAsCString str $ \c_str -> do
+      alloca $ \p_string_list -> do
+        size <- c_hunspell_stem handle p_string_list c_str
+        withStringList handle p_string_list size $ \string_list -> do
+          strings string_list size
 
 stemText :: Hunspell -> Text -> [Text]
 stemText hunspell = map E.decodeUtf8 . stem hunspell . E.encodeUtf8
