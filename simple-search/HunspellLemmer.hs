@@ -72,8 +72,10 @@ stem (Hunspell handle) str = unsafePerformIO $ do
     B.useAsCString str $ \c_str -> do
       alloca $ \p_string_list -> do
         size <- c_hunspell_stem handle p_string_list c_str
-        withStringList handle p_string_list size $ \string_list -> do
-          strings string_list size
+        if size == 0 then return [str]
+          else do
+          withStringList handle p_string_list size $ \p_string_list -> do
+            strings p_string_list size
 
 stemText :: Hunspell -> Text -> [Text]
 stemText hunspell = map E.decodeUtf8 . stem hunspell . E.encodeUtf8
