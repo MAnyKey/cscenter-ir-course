@@ -9,11 +9,21 @@ import System.Environment
 import Control.Monad
 import Control.Applicative
 import qualified Data.Foldable as F
+import Data.Monoid
 
 import Pipes
 
-import Data.ByteString.Lazy (ByteString)
-import qualified Data.ByteString.Lazy as BS
+
+import Data.Char
+
+import Data.IORef
+import Data.Digest.Pure.MD5
+import Data.Binary
+
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as L
+import Data.ByteString.Lazy.Builder
 import Data.HashSet (HashSet)
 import qualified Data.HashSet as HashSet
 import Data.HashMap.Strict (HashMap)
@@ -40,16 +50,19 @@ import HunspellLemmer
 data Token = Token
            deriving (Ord, Eq)
 
-preprocess stemmer = map stemmer . tokenize . extractPlainText
+tokenize = run (whitespace >=> uris >=> punctuation >=> contractions)
+
+preprocess stemmer = map (stemmer . T.toLower) . filterPunctuation . tokenize . extractPlainText
   where extractPlainText = innerText . parseTags
-        tokenize = run (whitespace >=> uris >=> punctuation >=> contractions)
+        filterPunctuation = filter (not . T.all isPunctuation)
+
 
 stemmer hunspell = stemText hunspell
 
 processFile process filePath = do
   tokenVariants <- process <$> TIO.readFile filePath
   let allTokens = HashSet.fromList $ concat tokenVariants
-  return (takeFileName filePath, allTokens)
+  return (filePath, allTokens)
 
 
 extractAllTokens hunspell = processFile (preprocess (stemmer hunspell))
@@ -65,29 +78,31 @@ getRecursiveContents topPath = do
       then getRecursiveContents path
       else yield path
 
-transform :: (Monad m) => (a -> m b) -> Pipe a b m ()
-transform f = await >>= lift . f >>= yield
+--transform :: (Monad m) => (a -> m b) -> Pipe a b m ()
+--transform f = await >>= lift . f >>= yield
 
-tokens :: Hunspell -> Pipe FilePath (Document, HashSet Text) IO ()
-tokens hunspell = transform (extractAllTokens hunspell)
+-- tokens :: Hunspell -> Pipe FilePath (Document, HashSet Text) IO ()
+-- tokens hunspell = transform (extractAllTokens hunspell)
 
-x |> f = f x
+-- x |> f = f x
 
-tokens' hunspell = \file -> file |> extractAllTokens hunspell |> lift >>= yield
+-- tokens' hunspell = \file -> file |> extractAllTokens hunspell |> lift >>= yield
 
 createDefaultHunspell = makeHunspell "./hunspell-dictionaries/ru_RU.aff" "./hunspell-dictionaries/ru_RU.dic"
 
 
+type DocumentId = Int
 type Document = FilePath
-type Index = HashMap Text [Document]
 
-type Index' = BasicHashTable Text [Document]
+type Index' = BasicHashTable Text [DocumentId]
+type DocTable = BasicHashTable DocumentId Document
 
-invert :: (Foldable t, HashTable h) =>
-          IOHashTable h Text [Document] ->
-          Document ->
-          t Text ->
-          IO ()
+-- invert :: (Foldable t, HashTable h) =>
+--           IOHashTable h Text [DocumentId] ->
+--           DocumentId ->
+--           t Text ->
+--           IO ()
+invert :: (Foldable t) => Index' -> DocumentId -> t Text -> IO ()
 invert hashtable document = F.mapM_ insert
   where insert token = do
           val <- Hash.lookup hashtable token
@@ -95,12 +110,84 @@ invert hashtable document = F.mapM_ insert
             Just docs -> Hash.insert hashtable token (document:docs)
             Nothing -> Hash.insert hashtable token [document]
 
-construct table = await >>= lift . invert table
+printPosting (tok, docs) = (putText tok) >> putStr " " >> print docs
+
+putText = BS.putStr . E.encodeUtf8
+
+createId :: Document -> IORef DocumentId -> DocTable -> IO DocumentId
+createId doc docIdRef docsTable = do
+  docId <- readIORef docIdRef
+  Hash.insert docsTable docId doc
+  writeIORef docIdRef (docId + 1)
+  return docId
+
+int64 = int64LE . fromIntegral
+
+go ref f acc item = do
+  modifyIORef ref (+1)
+  return $ f acc item
+
+serializeDocTable :: DocTable -> IO Builder
+serializeDocTable doctable = do
+  ref <- newIORef 0
+  docs <- Hash.foldM (go ref update) mempty doctable
+  count <- readIORef ref
+  return $ int64LE count <> docs
+  where
+    update builder (docid, doc) =
+      let bytes = E.encodeUtf8 . T.pack $ doc
+          bytesCount = BS.length bytes
+      in (builder <> int64 docid <> int64 bytesCount <> byteString bytes)
+
+serializePostings :: [DocumentId] -> Builder
+serializePostings = foldr f mempty
+  where f = curry (uncurry mappend . first int64)
+
+-- counting f arg = do
+--   ref <- newIORef 1
+--   result <- f g arg --Hash.foldM (go ref update) mempty index
+--   count <- readIORef ref
+--   return $ int64LE count <> result
+--   where g
+
+-- serializeIndex' index counting
+
+serializeIndex :: Index' -> IO Builder
+serializeIndex index = do
+  ref <- newIORef 0
+  postings <- Hash.foldM (go ref update) mempty index
+  count <- readIORef ref
+  return $ int64LE count <> postings
+  where
+    update builder (tok, docs) =
+      let tokBytes = E.encodeUtf8 tok
+          tokBytesCount = BS.length tokBytes
+          postingsBytes = toLazyByteString . serializePostings $ docs
+          postingsBytesCount = L.length postingsBytes
+      in (builder <> int64 tokBytesCount <> byteString tokBytes <> int64LE postingsBytesCount <> lazyByteString postingsBytes)
+
+serialize :: DocTable -> Index' -> IO Builder
+serialize doctable index = mappend <$> serializeDocTable doctable <*> serializeIndex index
+
+testTables :: IO (DocTable, Index')
+testTables = do
+  docs <- Hash.new
+  index <- Hash.new
+  Hash.insert docs 5 "foobar"
+  Hash.insert docs 1 "barfoo"
+  return (docs, index)
 
 main = do
-  [dir] <- getArgs
+  [dir, indexName] <- getArgs
   Just hunspell <- createDefaultHunspell
-  return ()
-  index :: Index' <- Hash.new
-  runEffect $ for (getRecursiveContents ~> tokens' hunspell $ dir) (lift . uncurry (invert index))
-  print index
+  index <- Hash.new
+  docIdRef <- newIORef 0
+  docsTable <- Hash.new
+  runEffect $ for (getRecursiveContents dir) $ \file -> lift $ do
+    (doc, tokens) <- extractAllTokens hunspell file
+    docId <- createId doc docIdRef docsTable
+    invert index docId tokens
+  serialized <- toLazyByteString <$> serialize docsTable index
+  let hash = encode . md5 $ serialized
+  L.writeFile indexName serialized
+  L.writeFile (addExtension indexName "md5") hash
