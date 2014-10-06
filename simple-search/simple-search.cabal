@@ -40,3 +40,28 @@ executable indexer
   default-language:    Haskell2010
   extra-lib-dirs:      "./"
   extra-libraries:     hunspell-1.3, stdc++
+
+executable searcher
+  main-is:             Searcher.hs
+  other-modules:       HunspellLemmer
+  -- other-extensions:
+  build-depends:       base >=4.5 && <5,
+                       bytestring >=0.10.0.0 && <= 0.10.4.0,
+                       directory >=1.2 && <1.3,
+                       containers >=0.4 && <0.5,
+                       mtl >= 2.1 && <2.3,
+                       pipes >=4.1 && <4.1.2,
+                       vector,
+                       text,
+                       filepath,
+                       unordered-containers,
+                       hashtables,
+                       cryptohash,
+                       binary,
+                       attoparsec
+
+
+  -- hs-source-dirs:
+  default-language:    Haskell2010
+  extra-lib-dirs:      "./"
+  extra-libraries:     hunspell-1.3, stdc++

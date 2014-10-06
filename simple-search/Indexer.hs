@@ -47,9 +47,6 @@ import NLP.Tokenize.Text hiding (tokenize)
 
 import HunspellLemmer
 
-data Token = Token
-           deriving (Ord, Eq)
-
 tokenize = run (whitespace >=> uris >=> punctuation >=> contractions)
 
 preprocess stemmer = map (stemmer . T.toLower) . filterPunctuation . tokenize . extractPlainText
