@@ -36,7 +36,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as E
 import qualified Data.Text.IO as TIO
 
-import Data.Attoparsec.ByteString
+import Data.Attoparsec.ByteString.Lazy
 import qualified Data.Attoparsec.Text as AttT
 
 import Crypto.Hash.MD5
@@ -64,7 +64,7 @@ parseData = eitherResult . parse inv
 
 query = undefined
 
-parseQuery = eitherResult . AttT.parse query
+parseQuery = AttT.eitherResult . AttT.parse query
 
 
 printResults result = case V.null result of
@@ -89,7 +89,7 @@ repl docs index = loop
 foo indexData = do
   case parseData indexData of
     Left err -> putStrLn err
-    Right (docs, index) -> repl docs index
+    Right (Inv docs index) -> repl docs index
 
 
 main = do
