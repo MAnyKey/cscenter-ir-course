@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ScopedTypeVariables, OverloadedStrings #-}
 module Main where
 
 import System.IO
@@ -62,10 +62,34 @@ inv = Inv <$> docs <*> index
 
 parseData = eitherResult . parse inv
 
-query = undefined
+data Query = Or [Text]
+           | And [Text]
+
+data Ops = Or' | And'
+
+term = AttT.takeTill isSpace
+
+terms' op = do
+  op' <- op
+  AttT.skip isSpace
+  t <- term
+  (_, ts) <- terms' op
+  return (op', (t:ts))
+
+or' = (AttT.string "or" <|> AttT.string "OR") >> return Or
+and' = (AttT.string "and" <|> AttT.string "AND") >> return And
+
+ors = terms' or'
+ands = terms' and'
+
+query = do
+  AttT.skip isSpace
+  t <- term
+  AttT.skip isSpace
+  (op, ts) <- ors <|> ands
+  return $ op (t:ts)
 
 parseQuery = AttT.eitherResult . AttT.parse query
-
 
 printResults result = case V.null result of
   True  -> putStrLn "no documents found"
