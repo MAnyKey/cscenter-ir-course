@@ -1,5 +1,5 @@
 {-# LANGUAGE ScopedTypeVariables, OverloadedStrings #-}
-module Main where
+module Searcher where
 
 import System.IO
 import System.Directory
@@ -7,6 +7,7 @@ import System.FilePath
 import System.Environment
 
 import Control.Monad
+import Control.Monad.Identity
 import Control.Applicative
 import qualified Data.Foldable as F
 import Data.Monoid
@@ -15,9 +16,9 @@ import Pipes
 
 import Data.Char
 import Data.Int
+import Data.List
 
 import Data.IORef
---import Data.Digest.Pure.MD5
 import Data.Binary
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
@@ -37,7 +38,10 @@ import qualified Data.Text.Encoding as E
 import qualified Data.Text.IO as TIO
 
 import Data.Attoparsec.ByteString.Lazy
-import qualified Data.Attoparsec.Text as AttT
+--import qualified Data.Attoparsec.Text as AttT
+
+import qualified Text.Parsec as P
+import qualified Text.Parsec.Text as PT
 
 import Crypto.Hash.MD5
 
@@ -51,51 +55,67 @@ type Docs = HashMap DocumentId Document
 type Index = HashMap Text (Vector DocumentId)
 data Inv = Inv Docs Index
 
-docs :: Parser Docs
+--docs :: Parser Docs
 docs = undefined
 
-index :: Parser Index
+--index :: Parser Index
 index = undefined
 
-inv :: Parser Inv
-inv = Inv <$> docs <*> index
+--inv :: Parser Inv
+--inv = Inv <$> docs <*> index
+inv = undefined
 
 parseData = eitherResult . parse inv
 
-data Query = Or [Text]
-           | And [Text]
+data Query = Multiple Ops [Text]
+           | One Text
+           deriving (Show)
 
 data Ops = Or' | And'
+         deriving (Show, Eq)
 
-term = AttT.takeTill isSpace
+term :: PT.Parser Text
+term = T.pack <$> many P.letter
 
-terms' op = do
-  op' <- op
-  AttT.skip isSpace
+or' :: PT.Parser Ops
+or' = (P.string "or" <|> P.string "OR") >> return Or'
+
+and' :: PT.Parser Ops
+and' = (P.string "and" <|> P.string "AND") >> return And'
+
+queryEnd :: PT.Parser (Ops, Text)
+queryEnd = do
+  operand <- or' <|> and'
+  P.spaces
   t <- term
-  (_, ts) <- terms' op
-  return (op', (t:ts))
+  return (operand, t)
 
-or' = (AttT.string "or" <|> AttT.string "OR") >> return Or
-and' = (AttT.string "and" <|> AttT.string "AND") >> return And
-
-ors = terms' or'
-ands = terms' and'
-
+query :: PT.Parser Query
 query = do
-  AttT.skip isSpace
+  P.spaces
   t <- term
-  AttT.skip isSpace
-  (op, ts) <- ors <|> ands
-  return $ op (t:ts)
+  P.spaces
+  ts <- P.many queryEnd
+  P.eof
+  case ts of
+   [] -> return $ One t
+   ((op, _):ts') -> case all ((== op) . fst) ts of
+     False -> P.parserFail "different operators"
+     True  -> return $ Multiple op (t : map snd ts)
 
-parseQuery = AttT.eitherResult . AttT.parse query
+parseQuery :: Text -> Either P.ParseError Query
+parseQuery = P.parse query ""
 
-printResults result = case V.null result of
-  True  -> putStrLn "no documents found"
-  False -> undefined
+showResults result = case V.null result of
+  True  -> "no documents found"
+  False -> "found " ++ intercalate ", " (V.toList firstPageResults) ++ renderOthers otherResults
   where
     (firstPageResults, otherResults) = V.splitAt 2 result
+    renderOthers otherResults = if V.null otherResults then "" else " and " ++ show (V.length otherResults) ++ " others"
+
+-- type Docs = HashMap DocumentId Document
+-- type Index = HashMap Text (Vector DocumentId)
+-- data Inv = Inv Docs Index
 
 run docs index query = undefined
 
@@ -106,8 +126,8 @@ repl docs index = loop
             True -> return ()
             False -> do
               case parseQuery (T.pack query) of
-                Left err -> putStrLn $ "incorrect query(" ++ err ++ ")"
-                Right query -> printResults (run docs index query)
+                Left err -> putStrLn $ "incorrect query"
+                Right query -> putStrLn $ showResults (run docs index query)
               loop
 
 foo indexData = do

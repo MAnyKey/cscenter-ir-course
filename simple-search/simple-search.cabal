@@ -58,7 +58,8 @@ executable searcher
                        hashtables,
                        cryptohash,
                        binary,
-                       attoparsec
+                       attoparsec,
+                       parsec >= 3.0
 
 
   -- hs-source-dirs:
