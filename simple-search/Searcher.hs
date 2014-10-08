@@ -20,6 +20,7 @@ import Pipes
 
 import Data.Char
 import Data.Int
+import Data.Word
 import Data.List (intercalate)
 import Data.Bits
 
@@ -59,51 +60,60 @@ type Token = Text
 type Docs = HashMap DocumentId Document
 type Index = HashMap Text (Vector DocumentId)
 data Inv = Inv Docs Index
+         deriving (Show, Eq)
 
 infixl 7 *|*
-(*|*) :: Int64 -> Int64 -> Int64
+(*|*) :: Word32 -> Word32 -> Word32
 (*|*) b l = shiftL b 8 .|. l
 
 
-makeInt64 :: Word8 -> Word8 -> Word8 -> Word8 -> Int64
-makeInt64 a b c d = result
+makeUInt32 :: Word8 -> Word8 -> Word8 -> Word8 -> Word32
+makeUInt32 a b c d = result
   where result = d' *|* c' *|* b' *|* a'
         (a', (b', (c', d'))) = mapp fromIntegral (a, (b, (c, d)))
         mapp f  =  f *** f *** f *** f
 
-anyInt64LE = makeInt64 <$> anyWord8 <*> anyWord8 <*> anyWord8 <*> anyWord8
+makeUInt64 :: Word32 -> Word32 -> Word64
+makeUInt64 lower higher = shiftL (fromIntegral higher) 32 .|. (fromIntegral lower)
+
+anyUInt64LE = do
+  lower <- makeUInt32 <$> anyWord8 <*> anyWord8 <*> anyWord8 <*> anyWord8
+  higher <- makeUInt32 <$> anyWord8 <*> anyWord8 <*> anyWord8 <*> anyWord8
+  return $ makeUInt64 lower higher
 
 doc :: Parser (DocumentId, Document)
 doc = do
-  docId <- anyInt64LE
-  bytesCount <- fromIntegral <$> anyInt64LE
+  docId <- fromIntegral <$> anyUInt64LE
+  bytesCount <- fromIntegral <$> anyUInt64LE
   bytes <- take bytesCount
   return $ (docId, E.decodeUtf8 bytes)
 
 docs :: Parser Docs
 docs = do
-  size <- fromIntegral <$> anyInt64LE
+  size <- fromIntegral <$> anyUInt64LE
   docList <- count size doc
   return $ HashMap.fromList docList
 
 postings :: Parser (Text, Vector DocumentId)
 postings = do
-  tokenSize <- fromIntegral <$> anyInt64LE
+  tokenSize <- fromIntegral <$> anyUInt64LE
   tokenBytes <- take tokenSize
   let token = E.decodeUtf8 tokenBytes
-  postingsLength <- fromIntegral <$> anyInt64LE
-  postingsList <- count postingsLength anyInt64LE
+  postingsLength <- fromIntegral <$> anyUInt64LE
+  postingsList <- count postingsLength anyUInt64LE
   let postings = V.fromListN postingsLength . map fromIntegral $ postingsList
   return (token, postings)
 
 index :: Parser Index
 index = do
-  indexSize <- fromIntegral <$> anyInt64LE
+  indexSize <- fromIntegral <$> anyUInt64LE
   tokenPostings <- count indexSize postings
   return $ HashMap.fromList tokenPostings
 
 inv :: Parser Inv
 inv = Inv <$> docs <*> index
+
+invFrom name = (eitherResult . parse inv) <$> L.readFile name
 
 parseData = eitherResult . parse inv
 
