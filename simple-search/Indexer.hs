@@ -163,7 +163,14 @@ testTables = do
   index <- Hash.new
   Hash.insert docs 5 "foobar"
   Hash.insert docs 1 "barfoo"
+  Hash.insert index (T.pack "hello") [5, 1]
+  Hash.insert index (T.pack "word") [5]
+  Hash.insert index (T.pack "world") [1]
   return (docs, index)
+
+dump indexName (docsTable, index) = do
+  serialized <- toLazyByteString <$> serialize docsTable index
+  L.writeFile indexName serialized
 
 main = do
   [dir, indexName] <- getArgs
