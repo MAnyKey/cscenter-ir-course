@@ -138,16 +138,7 @@ serializeDocTable doctable = do
 
 serializePostings :: [DocumentId] -> Builder
 serializePostings = foldr f mempty
-  where f = curry (uncurry mappend . first int64)
-
--- counting f arg = do
---   ref <- newIORef 1
---   result <- f g arg --Hash.foldM (go ref update) mempty index
---   count <- readIORef ref
---   return $ int64LE count <> result
---   where g
-
--- serializeIndex' index counting
+  where f = \d b -> int64 d <> b
 
 serializeIndex :: Index' -> IO Builder
 serializeIndex index = do
@@ -159,9 +150,9 @@ serializeIndex index = do
     update builder (tok, docs) =
       let tokBytes = E.encodeUtf8 tok
           tokBytesCount = BS.length tokBytes
-          postingsBytes = toLazyByteString . serializePostings $ docs
-          postingsBytesCount = L.length postingsBytes
-      in (builder <> int64 tokBytesCount <> byteString tokBytes <> int64LE postingsBytesCount <> lazyByteString postingsBytes)
+          postings = serializePostings $ docs
+          postingsLength = length docs
+      in (builder <> int64 tokBytesCount <> byteString tokBytes <> int64 postingsLength <> postings)
 
 serialize :: DocTable -> Index' -> IO Builder
 serialize doctable index = mappend <$> serializeDocTable doctable <*> serializeIndex index

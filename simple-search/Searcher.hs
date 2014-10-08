@@ -1,11 +1,15 @@
 {-# LANGUAGE ScopedTypeVariables, OverloadedStrings #-}
 module Searcher where
 
+import Prelude hiding (take)
+import qualified Prelude as Pr
+
 import System.IO
 import System.Directory
 import System.FilePath
 import System.Environment
 
+import Control.Arrow
 import Control.Monad
 import Control.Monad.Identity
 import Control.Applicative
@@ -16,7 +20,8 @@ import Pipes
 
 import Data.Char
 import Data.Int
-import Data.List
+import Data.List (intercalate)
+import Data.Bits
 
 import Data.IORef
 import Data.Binary
@@ -55,15 +60,50 @@ type Docs = HashMap DocumentId Document
 type Index = HashMap Text (Vector DocumentId)
 data Inv = Inv Docs Index
 
---docs :: Parser Docs
-docs = undefined
+infixl 7 *|*
+(*|*) :: Int64 -> Int64 -> Int64
+(*|*) b l = shiftL b 8 .|. l
 
---index :: Parser Index
-index = undefined
 
---inv :: Parser Inv
---inv = Inv <$> docs <*> index
-inv = undefined
+makeInt64 :: Word8 -> Word8 -> Word8 -> Word8 -> Int64
+makeInt64 a b c d = result
+  where result = d' *|* c' *|* b' *|* a'
+        (a', (b', (c', d'))) = mapp fromIntegral (a, (b, (c, d)))
+        mapp f  =  f *** f *** f *** f
+
+anyInt64LE = makeInt64 <$> anyWord8 <*> anyWord8 <*> anyWord8 <*> anyWord8
+
+doc :: Parser (DocumentId, Document)
+doc = do
+  docId <- anyInt64LE
+  bytesCount <- fromIntegral <$> anyInt64LE
+  bytes <- take bytesCount
+  return $ (docId, E.decodeUtf8 bytes)
+
+docs :: Parser Docs
+docs = do
+  size <- fromIntegral <$> anyInt64LE
+  docList <- count size doc
+  return $ HashMap.fromList docList
+
+postings :: Parser (Text, Vector DocumentId)
+postings = do
+  tokenSize <- fromIntegral <$> anyInt64LE
+  tokenBytes <- take tokenSize
+  let token = E.decodeUtf8 tokenBytes
+  postingsLength <- fromIntegral <$> anyInt64LE
+  postingsList <- count postingsLength anyInt64LE
+  let postings = V.fromListN postingsLength . map fromIntegral $ postingsList
+  return (token, postings)
+
+index :: Parser Index
+index = do
+  indexSize <- fromIntegral <$> anyInt64LE
+  tokenPostings <- count indexSize postings
+  return $ HashMap.fromList tokenPostings
+
+inv :: Parser Inv
+inv = Inv <$> docs <*> index
 
 parseData = eitherResult . parse inv
 
@@ -130,7 +170,7 @@ repl docs index = loop
                 Right query -> putStrLn $ showResults (run docs index query)
               loop
 
-foo indexData = do
+startRepl indexData = do
   case parseData indexData of
     Left err -> putStrLn err
     Right (Inv docs index) -> repl docs index
@@ -144,4 +184,4 @@ main = do
   let resultHash = hashlazy data'
   if resultHash /= expectedHash then do
     putStrLn $ "md5(" ++ indexFile ++ ") doesn't match with " ++ hashFile
-    else foo data'
+    else startRepl data'
