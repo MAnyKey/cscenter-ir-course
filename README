@@ -3,17 +3,12 @@ Building
 
 To build you will need git, g++, GHC, Cabal and some time to build dependencies.
 
-```
 cd simple-search
 make
-```
 
 Using
 
-```
 ./indexer ./docs index.inv
-```
 
-```
+
 ./searcher index.inv
-```
