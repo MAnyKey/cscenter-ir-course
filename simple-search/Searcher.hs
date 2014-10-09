@@ -1,5 +1,5 @@
 {-# LANGUAGE ScopedTypeVariables, OverloadedStrings #-}
-module Searcher where
+module Main where
 
 import Prelude hiding (take)
 import qualified Prelude as Pr
