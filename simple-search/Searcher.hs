@@ -18,10 +18,11 @@ import Data.Monoid
 
 import Pipes
 
+import Data.Maybe
 import Data.Char
 import Data.Int
 import Data.Word
-import Data.List (intercalate)
+import Data.List (intercalate, foldl', foldl1')
 import Data.Bits
 
 import Data.IORef
@@ -156,18 +157,44 @@ query = do
 parseQuery :: Text -> Either P.ParseError Query
 parseQuery = P.parse query ""
 
+showResults :: Vector Text -> String
 showResults result = case V.null result of
   True  -> "no documents found"
-  False -> "found " ++ intercalate ", " (V.toList firstPageResults) ++ renderOthers otherResults
+  False -> "found " ++ intercalate ", " (map T.unpack . V.toList $ firstPageResults) ++ renderOthers otherResults
   where
     (firstPageResults, otherResults) = V.splitAt 2 result
     renderOthers otherResults = if V.null otherResults then "" else " and " ++ show (V.length otherResults) ++ " others"
 
--- type Docs = HashMap DocumentId Document
--- type Index = HashMap Text (Vector DocumentId)
--- data Inv = Inv Docs Index
+orMerge' left right = V.fromList $ loop (V.toList left) (V.toList right)
+  where loop [] right' = right'
+        loop left' [] = left'
+        loop xs@(x:xs') ys@(y:ys') = case compare x y of
+          EQ -> x : loop xs' ys'
+          LT -> x : loop xs' ys
+          GT -> y : loop xs ys'
 
-run docs index query = undefined
+andMerge' left right = V.fromList $ loop (V.toList left) (V.toList right)
+  where loop [] right' = []
+        loop left' [] = []
+        loop xs@(x:xs') ys@(y:ys') = case compare x y of
+          EQ -> x : loop xs' ys'
+          LT -> loop xs' ys
+          GT -> loop xs ys'
+
+orMerge postings = foldr1 orMerge' postings
+andMerge postings = foldr1 andMerge' postings
+
+merging Or' = orMerge
+merging And' = andMerge
+
+run :: Docs -> Index -> Query -> Vector Document
+run docs index query = case query of
+  One term -> getDocs . lookupIndex $ term
+  Multiple op terms -> getDocs . merging op . map lookupIndex $ terms
+  where
+    lookupIndex = fromMaybe V.empty . flip HashMap.lookup index
+    getDocs = V.map (docs HashMap.!)
+
 
 repl docs index = loop
   where loop = do
