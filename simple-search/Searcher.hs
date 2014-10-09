@@ -170,16 +170,16 @@ orMerge' left right = V.fromList $ loop (V.toList left) (V.toList right)
         loop left' [] = left'
         loop xs@(x:xs') ys@(y:ys') = case compare x y of
           EQ -> x : loop xs' ys'
-          LT -> x : loop xs' ys
-          GT -> y : loop xs ys'
+          LT -> y : loop xs ys'
+          GT -> x : loop xs' ys
 
 andMerge' left right = V.fromList $ loop (V.toList left) (V.toList right)
   where loop [] right' = []
         loop left' [] = []
         loop xs@(x:xs') ys@(y:ys') = case compare x y of
           EQ -> x : loop xs' ys'
-          LT -> loop xs' ys
-          GT -> loop xs ys'
+          LT -> loop xs ys'
+          GT -> loop xs' ys
 
 orMerge postings = foldr1 orMerge' postings
 andMerge postings = foldr1 andMerge' postings
@@ -187,38 +187,48 @@ andMerge postings = foldr1 andMerge' postings
 merging Or' = orMerge
 merging And' = andMerge
 
-run :: Docs -> Index -> Query -> Vector Document
-run docs index query = case query of
-  One term -> getDocs . lookupIndex $ term
-  Multiple op terms -> getDocs . merging op . map lookupIndex $ terms
+run :: Hunspell -> Docs -> Index -> Query -> Vector Document
+run hunspell docs index query = case query of
+  One term -> getDocs . orMerge . map lookupIndex . stem $ term
+  Multiple op terms -> getDocs . merging op . map (orMerge . map lookupIndex . stem) $ terms
   where
     lookupIndex = fromMaybe V.empty . flip HashMap.lookup index
     getDocs = V.map (docs HashMap.!)
+    stem = stemText hunspell
 
 
-repl docs index = loop
+repl hunspell docs index = do
+  hSetBuffering stdout NoBuffering
+  loop
   where loop = do
-          query <- getLine
-          case null query of
-            True -> return ()
-            False -> do
-              case parseQuery (T.pack query) of
-                Left err -> putStrLn $ "incorrect query"
-                Right query -> putStrLn $ showResults (run docs index query)
-              loop
+          putStr "> "
+          eof <- isEOF
+          if eof then return ()
+            else do
+            query <- getLine
+            case null query of
+              True -> return ()
+              False -> do
+                case parseQuery (T.pack query) of
+                  Left err -> putStrLn $ "incorrect query"
+                  Right query -> putStrLn $ showResults (search query)
+                loop
+        search = run hunspell docs index
 
-startRepl indexData = do
+startRepl hunspell indexData = do
   case parseData indexData of
     Left err -> putStrLn err
-    Right (Inv docs index) -> repl docs index
+    Right (Inv docs index) -> repl hunspell docs index
 
+createDefaultHunspell = makeHunspell "./hunspell-dictionaries/ru_RU.aff" "./hunspell-dictionaries/ru_RU.dic"
 
 main = do
   [indexFile] <- getArgs
   let hashFile = addExtension indexFile "md5"
+  (Just hunspell) <- createDefaultHunspell
   expectedHash <- BS.readFile hashFile
   data' <- L.readFile indexFile
   let resultHash = hashlazy data'
   if resultHash /= expectedHash then do
     putStrLn $ "md5(" ++ indexFile ++ ") doesn't match with " ++ hashFile
-    else startRepl data'
+    else startRepl hunspell data'

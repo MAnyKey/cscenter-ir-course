@@ -179,6 +179,7 @@ main = do
   docIdRef <- newIORef 0
   docsTable <- Hash.new
   runEffect $ for (getRecursiveContents dir) $ \file -> lift $ do
+    putStrLn $ "processing " ++ file
     (doc, tokens) <- extractAllTokens hunspell file
     docId <- createId doc docIdRef docsTable
     invert index docId tokens

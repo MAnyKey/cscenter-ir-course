@@ -64,7 +64,6 @@ strings' :: Ptr CStringList -> CInt -> IO (Vector ByteString)
 strings' p_list c_size = handleEmptyList p_list c_size $ \list -> do
   V.mapM (peekElemOff list >=> B.packCString) . V.enumFromN 0 . fromIntegral $ c_size
 
-
 {-# NOINLINE stem #-}
 stem :: Hunspell -> ByteString -> [ByteString]
 stem (Hunspell handle) str = unsafePerformIO $ do
