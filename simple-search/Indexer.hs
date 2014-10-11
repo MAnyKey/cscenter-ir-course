@@ -6,10 +6,12 @@ import System.Directory
 import System.FilePath
 import System.Environment
 
+import Control.DeepSeq
 import Control.Monad
 import Control.Applicative
 import qualified Data.Foldable as F
 import Data.Monoid
+import Data.Maybe
 
 import Pipes
 
@@ -31,33 +33,79 @@ import qualified Data.HashMap.Strict as HashMap
 import Data.HashTable.Class (HashTable)
 import Data.HashTable.IO (IOHashTable, BasicHashTable)
 import qualified Data.HashTable.IO as Hash
-import Data.Vector (Vector)
-import qualified Data.Vector as V
-import Data.Vector.Mutable (MVector)
-import qualified Data.Vector.Mutable as MV
+import Data.Vector.Unboxed (Vector)
+import qualified Data.Vector.Unboxed as V
+import Data.Vector.Unboxed.Mutable (IOVector)
+import qualified Data.Vector.Unboxed.Mutable as MV
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Lazy as LT
+import qualified Data.Text.Lazy.IO as LTIO
 import qualified Data.Text.Encoding as E
 import qualified Data.Text.IO as TIO
 
-
-import Text.XML.HXT.Core
 import Text.HTML.TagSoup
-import NLP.Tokenize.Text hiding (tokenize)
+import Text.HTML.TagSoup.Fast.Utf8Only hiding (parseTags)
+--import qualified NLP.Tokenize.Text as Tok --hiding (tokenize)
 
 import HunspellLemmer
+--import qualified Tokenizer as LTok
+import Tokenizer hiding (tokenize)
 
+data PushVector a = PVec {-# UNPACK #-} !Int !(IOVector a)
+
+unsafePushBack s v x = do
+  MV.unsafeWrite v s x
+  return $ PVec (s+1) v
+
+vectorSize (PVec s _) = s
+
+--pushBack :: Unbox a => PushVector a -> a -> IO (PushVector a)
+pushBack pv@(PVec s v) x
+  | MV.length v /= s = unsafePushBack s v x
+  | otherwise     = do
+    v' <- MV.unsafeGrow v (s `div` 2)
+    unsafePushBack s v' x
+
+newVector :: MV.Unbox a => IO (PushVector a)
+newVector = PVec 0 <$> MV.new initialSize
+  where initialSize = 10
+
+myInnerTextTags = mapMaybe maybeTagText
+
+myTextConcat = LT.concat
+
+-- --dumtest :: FilePath -> IO [LT.Text] --IO LT.Text
+-- dumtest filePath = do
+--   tokens <- tokenize . extractPlainText <$> LTIO.readFile filePath
+--   --let allTokens = HashSet.fromList $ tokens
+--   return tokens
+--   where extractPlainText = foo . parseTagsOptions parseOptions
+--         -- foo :: [Tag Text] -> LT.Text
+--         foo = myTextConcat . myInnerTextTags
+--         -- foo :: [Tag LT.Text] -> LT.Text
+--         -- foo = innerText
+--         -- foo = id
+--         -- filterPunctuation = filter (not . LT.all isPunctuation)
+
+--tokenize :: LT.Text -> [LT.Text]
 tokenize = run (whitespace >=> uris >=> punctuation >=> contractions)
 
-preprocess stemmer = map (stemmer . T.toLower) . filterPunctuation . tokenize . extractPlainText
-  where extractPlainText = innerText . parseTags
+preprocess stemmer = map (stemmer . T.toLower) . filterPunctuation . map LT.toStrict . mytok . extractPlainText
+  where extractPlainText = myInnerText . myparse
+        myparse = {-# SCC "myparse" #-} parseTagsT
+        mytok = {-# SCC "mytok" #-} tokenize
         filterPunctuation = filter (not . T.all isPunctuation)
+        myInnerText = {-# SCC "inner-text" #-} myTextConcat . myInnerTextTags
+          where
+            myInnerTextTags = mapMaybe maybeTagText
+            myTextConcat = LT.fromChunks
 
 
 stemmer hunspell = stemText hunspell
 
 processFile process filePath = do
-  tokenVariants <- process <$> TIO.readFile filePath
+  tokenVariants <- process <$> BS.readFile filePath
   let allTokens = HashSet.fromList $ concat tokenVariants
   return (filePath, allTokens)
 
@@ -91,7 +139,7 @@ createDefaultHunspell = makeHunspell "./hunspell-dictionaries/ru_RU.aff" "./huns
 type DocumentId = Int
 type Document = FilePath
 
-type Index' = BasicHashTable Text [DocumentId]
+type Index' = BasicHashTable Text (PushVector DocumentId)
 type DocTable = BasicHashTable DocumentId Document
 
 -- invert :: (Foldable t, HashTable h) =>
@@ -103,9 +151,12 @@ invert :: (Foldable t) => Index' -> DocumentId -> t Text -> IO ()
 invert hashtable document = F.mapM_ insert
   where insert token = do
           val <- Hash.lookup hashtable token
-          case val of
-            Just docs -> Hash.insert hashtable token (document:docs)
-            Nothing -> Hash.insert hashtable token [document]
+          pv <- maybe newVector return val
+          pv' <- pushBack pv document
+          Hash.insert hashtable token pv'
+          -- case val of
+          --   Just docs -> Hash.insert hashtable token (document:docs)
+          --   Nothing -> Hash.insert hashtable token [document]
 
 printPosting (tok, docs) = (putText tok) >> putStr " " >> print docs
 
@@ -122,7 +173,7 @@ int64 = int64LE . fromIntegral
 
 go ref f acc item = do
   modifyIORef ref (+1)
-  return $ f acc item
+  f acc item
 
 serializeDocTable :: DocTable -> IO Builder
 serializeDocTable doctable = do
@@ -131,14 +182,17 @@ serializeDocTable doctable = do
   count <- readIORef ref
   return $ int64LE count <> docs
   where
-    update builder (docid, doc) =
+    update builder (docid, doc) = return $
       let bytes = E.encodeUtf8 . T.pack $ doc
           bytesCount = BS.length bytes
       in (builder <> int64 docid <> int64 bytesCount <> byteString bytes)
 
-serializePostings :: [DocumentId] -> Builder
-serializePostings = foldr f mempty
-  where f = \d b -> int64 d <> b
+serializePostings :: (PushVector DocumentId) -> IO Builder
+serializePostings (PVec s v) = do
+  v' <- V.unsafeFreeze v
+  let v'' = V.slice 0 s v'
+      f = \d b -> int64 d <> b
+  return $ V.foldr f mempty v''
 
 serializeIndex :: Index' -> IO Builder
 serializeIndex index = do
@@ -147,32 +201,37 @@ serializeIndex index = do
   count <- readIORef ref
   return $ int64LE count <> postings
   where
-    update builder (tok, docs) =
+    update builder (tok, docs) = do
+      postings <- serializePostings $ docs
       let tokBytes = E.encodeUtf8 tok
           tokBytesCount = BS.length tokBytes
-          postings = serializePostings $ docs
-          postingsLength = length docs
-      in (builder <> int64 tokBytesCount <> byteString tokBytes <> int64 postingsLength <> postings)
+          postingsLength = vectorSize docs
+      return (builder <> int64 tokBytesCount <> byteString tokBytes <> int64 postingsLength <> postings)
 
 serialize :: DocTable -> Index' -> IO Builder
 serialize doctable index = mappend <$> serializeDocTable doctable <*> serializeIndex index
 
-testTables :: IO (DocTable, Index')
-testTables = do
-  docs <- Hash.new
-  index <- Hash.new
-  Hash.insert docs 5 "foobar"
-  Hash.insert docs 1 "barfoo"
-  Hash.insert index (T.pack "hello") [5, 1]
-  Hash.insert index (T.pack "word") [5]
-  Hash.insert index (T.pack "world") [1]
-  return (docs, index)
+-- testTables :: IO (DocTable, Index')
+-- testTables = do
+--   docs <- Hash.new
+--   index <- Hash.new
+--   Hash.insert docs 5 "foobar"
+--   Hash.insert docs 1 "barfoo"
+--   Hash.insert index (T.pack "hello") [5, 1]
+--   Hash.insert index (T.pack "word") [5]
+--   Hash.insert index (T.pack "world") [1]
+--   return (docs, index)
 
 dump indexName (docsTable, index) = do
   serialized <- toLazyByteString <$> serialize docsTable index
   L.writeFile indexName serialized
 
 main = do
+  -- [fileName] <- getArgs
+  -- x <- dumtest fileName
+  -- -- TIO.writeFile "output" $ x
+  -- -- print (x `deepseq` ())
+  -- LTIO.writeFile "output"  . LT.pack . show $ x
   [dir, indexName] <- getArgs
   Just hunspell <- createDefaultHunspell
   index <- Hash.new
