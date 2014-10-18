@@ -170,16 +170,16 @@ orMerge' left right = V.fromList $ loop (V.toList left) (V.toList right)
         loop left' [] = left'
         loop xs@(x:xs') ys@(y:ys') = case compare x y of
           EQ -> x : loop xs' ys'
-          LT -> y : loop xs ys'
-          GT -> x : loop xs' ys
+          LT -> x : loop xs' ys
+          GT -> y : loop xs  ys'
 
 andMerge' left right = V.fromList $ loop (V.toList left) (V.toList right)
   where loop [] right' = []
         loop left' [] = []
         loop xs@(x:xs') ys@(y:ys') = case compare x y of
           EQ -> x : loop xs' ys'
-          LT -> loop xs ys'
-          GT -> loop xs' ys
+          LT -> loop xs' ys
+          GT -> loop xs  ys'
 
 orMerge postings = foldr1 orMerge' postings
 andMerge postings = foldr1 andMerge' postings
