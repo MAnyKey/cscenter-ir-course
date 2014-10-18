@@ -15,8 +15,9 @@ import Data.Maybe
 
 import Pipes
 
-
 import Data.Char
+import Data.Int
+import Data.Word
 
 import Data.IORef
 import Data.Digest.Pure.MD5
@@ -83,12 +84,14 @@ preprocess stemmer = map (stemmer . T.toLower) . filterPunctuation . map LT.toSt
             myInnerTextTags = mapMaybe maybeTagText
             myTextConcat = LT.fromChunks
 
-extractAllTokens :: Hunspell -> FilePath -> IO (FilePath, HashSet Text)
+extractAllTokens :: Hunspell -> FilePath -> IO (FilePath, [(TokenIndex, Text)])
 extractAllTokens hunspell filePath = do
-  allTokens <- HashSet.fromList . concat . preprocess stemmer <$> BS.readFile filePath
+  allTokens <- concat . addTokIndices . preprocess stemmer <$> BS.readFile filePath
   return (filePath, allTokens)
   where
     stemmer = stemText hunspell
+    addTokIndices = zipWith zipF [1..]
+    zipF = \idx toks -> zip (repeat idx) toks
 
 getRecursiveContents :: FilePath -> Producer FilePath IO ()
 getRecursiveContents topPath = do
@@ -105,17 +108,18 @@ createDefaultHunspell = makeHunspell "./hunspell-dictionaries/ru_RU.aff" "./huns
 
 type DocumentId = Int
 type Document = FilePath
-type TokenIndex = Int
+type TokenIndex = Word32
+type Postings = PushVector (DocumentId, TokenIndex)
 
-type Index' = BasicHashTable Text (PushVector (DocumentId))
+type Index' = BasicHashTable Text Postings
 type DocTable = BasicHashTable DocumentId Document
 
-invert :: (Foldable t) => Index' -> DocumentId -> t Text -> IO ()
+invert :: (Foldable t) => Index' -> DocumentId -> t (TokenIndex, Text) -> IO ()
 invert hashtable document = F.mapM_ insert
-  where insert token = do
+  where insert (idx, token) = do
           val <- Hash.lookup hashtable token
           pv <- maybe newVector return val
-          pv' <- pushBack pv document
+          pv' <- pushBack pv (document, idx)
           Hash.insert hashtable token pv'
 
 printPosting (tok, docs) = (putText tok) >> putStr " " >> print docs
@@ -130,6 +134,7 @@ createId doc docIdRef docsTable = do
   return docId
 
 int64 = int64LE . fromIntegral
+int32 = int32LE . fromIntegral
 
 go ref f acc item = do
   modifyIORef ref (+1)
@@ -147,12 +152,12 @@ serializeDocTable doctable = do
           bytesCount = BS.length bytes
       in (builder <> int64 docid <> int64 bytesCount <> byteString bytes)
 
-serializePostings :: (PushVector DocumentId) -> IO Builder
-serializePostings (PVec s v) = do
-  v' <- V.unsafeFreeze v
-  let v'' = V.slice 0 s v'
-      f = \d b -> int64 d <> b
-  return $ V.foldr f mempty v''
+serializePostings :: Postings -> IO Builder
+serializePostings (PVec size v) = do
+  freezedVector <- V.unsafeFreeze v
+  let actualValues = V.slice 0 size freezedVector
+      f = \(d, idx) b -> int64 d <> int32 idx <> b
+  return $ V.foldr f mempty actualValues
 
 serializeIndex :: Index' -> IO Builder
 serializeIndex index = do
