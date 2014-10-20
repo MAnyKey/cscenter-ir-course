@@ -58,13 +58,13 @@ type Document = Text
 type DocumentId = Int64
 type Token = Text
 
-type TokenIndex = Word64
+type TokenIndex = Int
 type Posting = (DocumentId, TokenIndex)
 
 data StrictPair a b = SPair {-# UNPACK #-} !a {-# UNPACK #-} !b
 
 type Docs = HashMap DocumentId Document
-type Index = HashMap Text (Vector DocumentId)
+type Index = HashMap Text (Vector Posting)
 data Inv = Inv Docs Index
          deriving (Show, Eq)
 
@@ -100,14 +100,16 @@ docs = do
   docList <- count size doc
   return $ HashMap.fromList docList
 
-postings :: Parser (Text, Vector DocumentId)
+posting  :: Parser Posting
+posting = (curry (fromIntegral *** fromIntegral)) <$> anyUInt64LE <*> anyUInt64LE
+
+postings :: Parser (Text, Vector Posting)
 postings = do
   tokenSize <- fromIntegral <$> anyUInt64LE
   tokenBytes <- take tokenSize
   let token = E.decodeUtf8 tokenBytes
   postingsLength <- fromIntegral <$> anyUInt64LE
-  postingsList <- count postingsLength anyUInt64LE
-  let postings = V.fromListN postingsLength . map fromIntegral $ postingsList
+  postings <- V.fromListN postingsLength <$> count postingsLength posting
   return (token, postings)
 
 index :: Parser Index
@@ -204,6 +206,41 @@ showResults result = case V.null result of
     (firstPageResults, otherResults) = V.splitAt 2 result
     renderOthers otherResults = if V.null otherResults then "" else " and " ++ show (V.length otherResults) ++ " others"
 
+
+properAround !dist = \(_, !idx) (_, !idx') -> distance idx idx' <= dist
+properNext !dist = \(_, !idx) (_, !idx') -> idx + dist == idx'
+properPrevious !dist = \(_, !idx) (_, !idx') -> idx' + dist == idx
+
+distance !a !b = max a b - min a b
+
+getProperFunction (Around n) = properAround n
+getProperFunction (Side n)
+  | n > 0 = properNext n
+  | n < 0 = properPrevious (-n)
+
+coordinateMerge' dep left right = V.fromList $ loop (V.toList left) (V.toList right)
+  where loop [] _  = []
+        loop _  [] = []
+        loop left right = let doc = fst . head $ left
+                              splitByDoc = span ((== doc) . fst)
+                              (lefts, lefts') = splitByDoc left
+                              (rights, rights') = splitByDoc right
+                          in go lefts rights lefts' rights'
+
+        proper = getProperFunction dep
+        go left right xs ys
+          | null left || null right = loop xs ys
+          | otherwise = filterC (\r -> any (\l -> proper l r) left) right (loop xs ys)
+          where
+            filterC p [] cont = cont
+            filterC p (x:xs) cont = case p x of
+              True -> x : other
+              False -> other
+              where other = filterC p xs cont
+
+coordinateMerge = foldl' go
+  where go left (dep, right) = coordinateMerge' dep left right
+
 orMerge' left right = V.fromList $ loop (V.toList left) (V.toList right)
   where loop [] right' = right'
         loop left' [] = left'
@@ -212,29 +249,43 @@ orMerge' left right = V.fromList $ loop (V.toList left) (V.toList right)
           LT -> x : loop xs' ys
           GT -> y : loop xs  ys'
 
-andMerge' left right = V.fromList $ loop (V.toList left) (V.toList right)
-  where loop [] right' = []
-        loop left' [] = []
-        loop xs@(x:xs') ys@(y:ys') = case compare x y of
-          EQ -> x : loop xs' ys'
-          LT -> loop xs' ys
-          GT -> loop xs  ys'
+-- andMerge' left right = V.fromList $ loop (V.toList left) (V.toList right)
+--   where loop [] right' = []
+--         loop left' [] = []
+--         loop xs@(x:xs') ys@(y:ys') = case compare x y of
+--           EQ -> x : loop xs' ys'
+--           LT -> loop xs' ys
+--           GT -> loop xs  ys'
 
 orMerge postings = foldr1 orMerge' postings
-andMerge postings = foldr1 andMerge' postings
+-- andMerge postings = foldr1 andMerge' postings
 
-merging Or' = orMerge
-merging And' = andMerge
+-- merging Or' = orMerge
+-- merging And' = andMerge
 
-run :: Hunspell -> Docs -> Index -> Query -> Vector Document
-run hunspell docs index query = case query of
-  One term -> getDocs . orMerge . map lookupIndex . stem $ term
-  Multiple op terms -> getDocs . merging op . map (orMerge . map lookupIndex . stem) $ terms
+-- run :: Hunspell -> Docs -> Index -> Query -> Vector Document
+-- run hunspell docs index query = case query of
+--   One term -> getDocs . orMerge . map lookupIndex . stem $ term
+--   Multiple op terms -> getDocs . merging op . map (orMerge . map lookupIndex . stem) $ terms
+--   where
+--     lookupIndex = fromMaybe V.empty . flip HashMap.lookup index
+--     getDocs = V.map (docs HashMap.!)
+--     stem = stemText hunspell
+
+mapFst f = map (first f)
+mapSnd f = map (second f)
+
+run :: Hunspell -> Docs -> Index -> Query' -> Vector Document
+run hunspell docs index (Query' t ts)  = getDocs . uncurry coordinateMerge . addDeps . lookup $ terms
   where
     lookupIndex = fromMaybe V.empty . flip HashMap.lookup index
-    getDocs = V.map (docs HashMap.!)
+    getDocs = V.map ((docs HashMap.!) . fst)
     stem = stemText hunspell
-
+    makeTerms t ts = t : map snd ts
+    terms = makeTerms t ts
+    deps = map fst ts
+    addDeps (x:xs) = (x, zip deps xs)
+    lookup = \terms -> map (orMerge . map lookupIndex . stem) terms
 
 repl hunspell docs index = do
   hSetBuffering stdout NoBuffering
@@ -248,7 +299,7 @@ repl hunspell docs index = do
             case null query of
               True -> return ()
               False -> do
-                case parseQuery (T.pack query) of
+                case parseQuery' (T.pack query) of
                   Left err -> putStrLn $ "incorrect query"
                   Right query -> putStrLn $ showResults (search query)
                 loop
