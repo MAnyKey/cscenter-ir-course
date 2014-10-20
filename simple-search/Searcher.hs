@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables, OverloadedStrings, TupleSections, BangPatterns #-}
 module Main where
 
 import Prelude hiding (take)
@@ -57,6 +57,11 @@ import HunspellLemmer
 type Document = Text
 type DocumentId = Int64
 type Token = Text
+
+type TokenIndex = Word64
+type Posting = (DocumentId, TokenIndex)
+
+data StrictPair a b = SPair {-# UNPACK #-} !a {-# UNPACK #-} !b
 
 type Docs = HashMap DocumentId Document
 type Index = HashMap Text (Vector DocumentId)
@@ -117,6 +122,40 @@ inv = Inv <$> docs <*> index
 invFrom name = (eitherResult . parse inv) <$> L.readFile name
 
 parseData = eitherResult . parse inv
+
+data PositionalDependency = Around Int
+                          | Side Int
+                          deriving (Show, Eq)
+
+data Query' = Query' Text [(PositionalDependency, Text)]
+            deriving (Show, Eq)
+
+number :: Int -> PT.Parser Char -> PT.Parser Int
+number base baseDigit = do
+  digits <- many1 baseDigit
+  let n = foldl' (\x d -> base*x + digitToInt d) 0 digits
+  return n
+
+lexeme p = P.spaces >> p
+
+decimal = number 10 P.digit
+
+previousD = P.char '-' >> (\n -> Side (-n)) <$> decimal
+nextD = P.char '+' >> Side <$> decimal
+aroundD = Around <$> decimal
+
+dependency = (P.char '/') >> (previousD <|> nextD <|> aroundD)
+
+queryEnd' = (,) <$> lexeme dependency <*> lexeme term
+
+query' = do
+  P.spaces
+  t <- term
+  ts <- P.many queryEnd'
+  P.eof
+  return $ Query' t ts
+
+parseQuery' = P.parse query' ""
 
 data Query = Multiple Ops [Text]
            | One Text
