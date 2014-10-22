@@ -43,7 +43,7 @@ executable indexer
   default-language:    Haskell2010
   extra-lib-dirs:      "./" "/usr/local/opt/icu4c/lib"
   extra-libraries:     hunspell-1.3, stdc++
-  ghc-options:         -rtsopts -prof -auto-all -caf-all
+  ghc-options:         -rtsopts
 
 executable searcher
   main-is:             Searcher.hs
