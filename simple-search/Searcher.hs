@@ -55,13 +55,11 @@ import Crypto.Hash.MD5
 import HunspellLemmer
 
 type Document = Text
-type DocumentId = Int64
+type DocumentId = Int
 type Token = Text
 
 type TokenIndex = Int
 type Posting = (DocumentId, TokenIndex)
-
-data StrictPair a b = SPair {-# UNPACK #-} !a {-# UNPACK #-} !b
 
 type Docs = HashMap DocumentId Document
 type Index = HashMap Text (Vector Posting)
@@ -83,9 +81,11 @@ makeUInt64 :: Word32 -> Word32 -> Word64
 makeUInt64 lower higher = shiftL (fromIntegral higher) 32 .|. (fromIntegral lower)
 
 anyUInt64LE = do
-  lower <- makeUInt32 <$> anyWord8 <*> anyWord8 <*> anyWord8 <*> anyWord8
-  higher <- makeUInt32 <$> anyWord8 <*> anyWord8 <*> anyWord8 <*> anyWord8
+  lower <- anyUInt32LE
+  higher <- anyUInt32LE
   return $ makeUInt64 lower higher
+
+anyUInt32LE = makeUInt32 <$> anyWord8 <*> anyWord8 <*> anyWord8 <*> anyWord8
 
 doc :: Parser (DocumentId, Document)
 doc = do
@@ -101,7 +101,7 @@ docs = do
   return $ HashMap.fromList docList
 
 posting  :: Parser Posting
-posting = (curry (fromIntegral *** fromIntegral)) <$> anyUInt64LE <*> anyUInt64LE
+posting = (curry (fromIntegral *** fromIntegral)) <$> anyUInt32LE <*> anyUInt32LE
 
 postings :: Parser (Text, Vector Posting)
 postings = do

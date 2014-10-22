@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ScopedTypeVariables, NoMonomorphismRestriction #-}
 module Main where
 
 import System.IO
@@ -156,7 +156,7 @@ serializePostings :: Postings -> IO Builder
 serializePostings (PVec size v) = do
   freezedVector <- V.unsafeFreeze v
   let actualValues = V.slice 0 size freezedVector
-      f = \(d, idx) b -> int64 d <> int32 idx <> b
+      f = \(d, idx) b -> int32 d <> int32 idx <> b
   return $ V.foldr f mempty actualValues
 
 serializeIndex :: Index' -> IO Builder
