@@ -1,0 +1,9 @@
+*.o
+*.aux
+*.inv
+*.md5
+*.hp
+*.prof
+*.ps
+
+*.hi
